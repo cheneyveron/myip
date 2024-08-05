@@ -1,7 +1,7 @@
-use std::io::{Error};
+use std::io::Error;
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -17,13 +17,28 @@ async fn main() -> Result<(), Error> {
     }
 }
 
-async fn handle_client(mut stream: TcpStream) -> Result<(), Error> {
+async fn handle_client(mut stream: tokio::net::TcpStream) -> Result<(), Error> {
+    match timeout(Duration::from_secs(1), process_request(&mut stream)).await {
+        Ok(result) => result,
+        Err(_) => {
+            // If the timeout occurs, we just drop the connection by doing nothing
+            Ok(())
+        }
+    }
+}
+
+async fn process_request(stream: &mut tokio::net::TcpStream) -> Result<(), Error> {
     let mut buffer = [0; 1024];
-    stream.read(&mut buffer).await?;
+    let bytes_read = stream.read(&mut buffer).await?;
+    
+    if bytes_read == 0 {
+        // Connection was closed by the client
+        return Ok(());
+    }
 
-    let request = String::from_utf8_lossy(&buffer);
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
     let request_line = request.lines().next().unwrap_or("");
-
+    
     if request_line.starts_with("GET /MySecretPath ") {
         let ip = stream.peer_addr()?.ip().to_string();
         let response = format!(
@@ -33,11 +48,9 @@ async fn handle_client(mut stream: TcpStream) -> Result<(), Error> {
         );
         stream.write_all(response.as_bytes()).await?;
     } else {
-        // If the request is not the specific GET request, reject the connection
-        let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-        stream.write_all(response.as_bytes()).await?;
+        // For unauthorized requests, we do nothing and let the function end
+        // This will cause the connection to be dropped without any response
     }
-
-    stream.flush().await?;
+    
     Ok(())
 }
